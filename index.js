@@ -6,6 +6,7 @@ const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const { v4: uuidv4 } = require('uuid');
+const path = require('path'); // Add this
 const User = require('./models/User');
 const KhalidBot = require('./bot');
 require('dotenv').config();
@@ -14,21 +15,23 @@ const app = express();
 const server = http.createServer(app);
 const io = socketIO(server, {
   cors: {
-    origin: "http://127.0.0.1:5500",
+    origin: process.env.NODE_ENV === 'production' 
+      ? ['https://your-app.onrender.com', 'http://localhost:5500']
+      : "http://127.0.0.1:5500",
     methods: ["GET", "POST"],
     credentials: true
   }
 });
 
 // Middleware
-app.use(cors({
-  origin: "http://127.0.0.1:5500",
-  credentials: true
-}));
+app.use(cors());
 app.use(express.json());
 
+// Serve static files from the client directory
+app.use(express.static(path.join(__dirname, '../client')));
+
 // MongoDB Connection
-mongoose.connect('mongodb://127.0.0.1:27017/bright_learners', {
+mongoose.connect(process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/bright_learners', {
   useNewUrlParser: true,
   useUnifiedTopology: true
 }).then(() => {
@@ -43,188 +46,34 @@ const khalidBot = new KhalidBot(io);
 // Store active rooms
 const rooms = new Map();
 
-// Authentication Routes
+// API Routes
 app.post('/api/register', async (req, res) => {
-  try {
-    const { username, email, password, role } = req.body;
-    
-    // Check if user exists
-    const existingUser = await User.findOne({ $or: [{ email }, { username }] });
-    if (existingUser) {
-      return res.status(400).json({ error: 'User already exists' });
-    }
-
-    // Hash password
-    const hashedPassword = await bcrypt.hash(password, 10);
-    
-    // Create user
-    const user = new User({
-      username,
-      email,
-      password: hashedPassword,
-      role: role || 'teacher'
-    });
-
-    await user.save();
-
-    // Generate token
-    const token = jwt.sign(
-      { userId: user._id, username: user.username, role: user.role },
-      'your_jwt_secret_key',
-      { expiresIn: '24h' }
-    );
-
-    res.status(201).json({
-      message: 'User created successfully',
-      token,
-      user: {
-        id: user._id,
-        username: user.username,
-        email: user.email,
-        role: user.role
-      }
-    });
-  } catch (error) {
-    console.error('Registration error:', error);
-    res.status(500).json({ error: 'Server error' });
-  }
+  // ... (same as before)
 });
 
 app.post('/api/login', async (req, res) => {
-  try {
-    const { email, password } = req.body;
-    
-    // Find user
-    const user = await User.findOne({ email });
-    if (!user) {
-      return res.status(401).json({ error: 'Invalid credentials' });
-    }
-
-    // Check password
-    const isValidPassword = await bcrypt.compare(password, user.password);
-    if (!isValidPassword) {
-      return res.status(401).json({ error: 'Invalid credentials' });
-    }
-
-    // Generate token
-    const token = jwt.sign(
-      { userId: user._id, username: user.username, role: user.role },
-      'your_jwt_secret_key',
-      { expiresIn: '24h' }
-    );
-
-    res.json({
-      message: 'Login successful',
-      token,
-      user: {
-        id: user._id,
-        username: user.username,
-        email: user.email,
-        role: user.role
-      }
-    });
-  } catch (error) {
-    console.error('Login error:', error);
-    res.status(500).json({ error: 'Server error' });
-  }
+  // ... (same as before)
 });
 
-// Room management routes
 app.post('/api/rooms/create', (req, res) => {
-  const { roomName, createdBy } = req.body;
-  const roomId = uuidv4().substring(0, 8);
-  
-  rooms.set(roomId, {
-    id: roomId,
-    name: roomName,
-    createdBy,
-    createdAt: new Date(),
-    participants: []
-  });
-
-  res.json({ roomId, roomName });
+  // ... (same as before)
 });
 
 app.get('/api/rooms', (req, res) => {
-  const roomsList = Array.from(rooms.values());
-  res.json(roomsList);
+  // ... (same as before)
+});
+
+// Serve the main HTML file for all other routes (SPA support)
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, '../client/index.html'));
 });
 
 // Socket.IO Connection Handling
 io.on('connection', (socket) => {
-  console.log('🟢 User connected:', socket.id);
-
-  socket.on('join-room', ({ roomId, username, userId }) => {
-    socket.join(roomId);
-    
-    // Add to room participants
-    if (rooms.has(roomId)) {
-      const room = rooms.get(roomId);
-      if (!room.participants.includes(username)) {
-        room.participants.push(username);
-      }
-    }
-
-    // Notify others in the room
-    socket.to(roomId).emit('user-connected', { username, userId });
-    
-    // Send room participants list
-    const room = rooms.get(roomId);
-    io.to(roomId).emit('room-participants', room?.participants || []);
-
-    console.log(`👤 ${username} joined room: ${roomId}`);
-  });
-
-  socket.on('leave-room', ({ roomId, username }) => {
-    socket.leave(roomId);
-    
-    if (rooms.has(roomId)) {
-      const room = rooms.get(roomId);
-      room.participants = room.participants.filter(p => p !== username);
-      
-      // Notify others
-      socket.to(roomId).emit('user-left', { username });
-      io.to(roomId).emit('room-participants', room.participants);
-    }
-
-    console.log(`👋 ${username} left room: ${roomId}`);
-  });
-
-  // WebRTC signaling
-  socket.on('offer', ({ offer, roomId, to }) => {
-    socket.to(to).emit('offer', { offer, from: socket.id });
-  });
-
-  socket.on('answer', ({ answer, roomId, to }) => {
-    socket.to(to).emit('answer', { answer, from: socket.id });
-  });
-
-  socket.on('ice-candidate', ({ candidate, roomId, to }) => {
-    socket.to(to).emit('ice-candidate', { candidate, from: socket.id });
-  });
-
-  // Chat messages
-  socket.on('chat-message', ({ roomId, message, username, userId }) => {
-    // Check if it's a bot command
-    if (message.text.startsWith('.')) {
-      khalidBot.handleMessage(roomId, username, message.text);
-    } else {
-      // Regular message
-      io.to(roomId).emit('chat-message', {
-        username,
-        text: message.text,
-        timestamp: new Date(),
-        userId
-      });
-    }
-  });
-
-  socket.on('disconnect', () => {
-    console.log('🔴 User disconnected:', socket.id);
-  });
+  // ... (same as before)
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`🚀 Server running on http://localhost:${PORT}`);
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 Server running on port ${PORT}`);
 });
